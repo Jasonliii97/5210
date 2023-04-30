@@ -1,160 +1,113 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from jellyfish import jaro_winkler
+import usaddress
+import re
+import math
 
-# C extensions
-*.so
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+# Load the datasets
+left_dataset = pd.read_csv('left_dataset.csv')
+right_dataset = pd.read_csv('right_dataset.csv')
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+left_dataset = left_dataset.head()
+right_dataset = right_dataset.head()
+for col in ['name', 'address', 'city', 'state']:
+    left_dataset[col] = left_dataset[col].astype(str).str.lower()
+for col in ['name', 'address', 'city', 'state']:
+    right_dataset[col] = right_dataset[col].astype(str).str.lower()
+import pandas as pd
+import numpy as np
+import re
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
+def preprocess_name(name):
+    name = name.strip()
+    name = re.sub(r'\b(inc|llc|ltd)\b', '', name)
+    return name.strip()
 
-# Translations
-*.mo
-*.pot
+def extract_zip_code(zip_code):
+    match = re.match(r"(\d+)", zip_code)
+    if match:
+        return match.group(1)
+    return None
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+def preprocess_address(address):
+    if isinstance(address, float) and math.isnan(address):
+        return ""
+    return address.strip()
 
-# Flask stuff:
-instance/
-.webassets-cache
+def combine_columns(row):
+    address = row['address']
+    zip_code = row['zip_code']
+    city = row['city']
+    state = row['state']
+    info = f"{address} {zip_code} {city} {state}"
+    return info
 
-# Scrapy stuff:
-.scrapy
+# Preprocess the data
+left_dataset['name'] = left_dataset['name'].apply(preprocess_name)
+left_dataset['address'] = left_dataset['address'].apply(preprocess_address)
+right_dataset['name'] = right_dataset['name'].apply(preprocess_name)
+right_dataset['address'] = right_dataset['address'].apply(preprocess_address)
+left_dataset['postal_code'] = left_dataset['postal_code'].fillna(-1).astype(int).astype(str).replace('-1', '')
+right_dataset['zip_code'] = right_dataset['zip_code'].astype(str).apply(extract_zip_code)
+left_dataset = left_dataset.rename(columns={'postal_code': 'zip_code'})
+left_dataset['info'] = left_dataset.apply(combine_columns, axis=1)
+right_dataset['info'] = right_dataset.apply(combine_columns, axis=1)
+def jaccard_similarity(a, b):
+    a_set = set(a.split())
+    b_set = set(b.split())
+    intersection = len(a_set.intersection(b_set))
+    union = len(a_set.union(b_set))
+    return intersection / union
 
-# Sphinx documentation
-docs/_build/
 
-# PyBuilder
-.pybuilder/
-target/
+threshold = 0.6
+# 合并左右数据集
+merged_data = left_dataset.merge(right_dataset, on=['zip_code', 'city', 'state'], suffixes=('_left', '_right'))
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# 定义相似性计算函数
+def similarity(row):
+    name_similarity = jaccard_similarity(row['name_left'], row['name_right'])
+    address_similarity = jaccard_similarity(row['info_left'], row['info_right'])
+    similarity_score = name_similarity*0.3 + address_similarity*0.7
+    return similarity_score
 
-# IPython
-profile_default/
-ipython_config.py
+# 应用相似性函数
+merged_data['similarity'] = merged_data.apply(similarity, axis=1)
 
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
+# 选择符合阈值的匹配项
+matches = merged_data[merged_data['similarity'] > threshold][['entity_id', 'business_id', 'similarity']].values.tolist()
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
+for match in matches:
+    entity_id = match[0]
+    business_id = match[1]
+    similarity_score = match[2]
+    
+    # 找到左数据集和右数据集中的对应行
+    left_row = left_dataset.loc[left_dataset['entity_id'] == entity_id]
+    right_row = right_dataset.loc[right_dataset['business_id'] == business_id]
+    
+    # 打印左数据集和右数据集中的名称和地址
+    print("Left dataset:")
+    print("Name: ", left_row['name'].values[0])
+    print("Address: ", left_row['info'].values[0])
+    
+    print("Right dataset:")
+    print("Name: ", right_row['name'].values[0])
+    print("Address: ", right_row['info'].values[0])
+    
+    # 打印相似性分数
+    print("Similarity score: ", round(similarity_score,3))
+    
+    # 打印一个分隔行，以便区分不同的匹配项
+    print("------------------------------")
 
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
+# Find matches
+matches = match_businesses(left_dataset, right_dataset)
 
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#pdm.lock
-#   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
-#   in version control.
-#   https://pdm.fming.dev/#use-with-ide
-.pdm.toml
-
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
-
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
+# Save results as a CSV file
+matches_df = pd.DataFrame(matches, columns=['left_dataset', 'right_dataset', 'similarity'])
+matches_df.to_csv('matches.csv', index=False)
